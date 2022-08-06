@@ -18,7 +18,7 @@ color_off="printf \033[0m"
 # get once info
 
 if [ -z "$1" ]; then
-	echo "Usage: procinfo-pc [proc_name] or [pid] "
+	echo "Usage: sudo ./procinfo-pc [proc_name] or [pid] "
 	exit 1
 else
 	process="$1"
