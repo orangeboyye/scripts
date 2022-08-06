@@ -1,0 +1,403 @@
+#!/bin/bash
+
+
+color_black_on="printf \033[30m"
+color_red_on="printf \033[31m"
+color_green_on="printf \033[32m"
+color_yellow_on="printf \033[33m"
+color_blue_on="printf \033[34m"
+color_purple_on="printf \033[35m"
+color_cyan_on="printf \033[36m"
+color_white_on="printf \033[37m"
+
+color_off="printf \033[0m"
+
+
+
+##################################################################
+# get once info
+
+if [ -z "$1" ]; then
+	echo "Usage: procinfo-pc [proc_name] or [pid] "
+	exit 1
+else
+	process="$1"
+fi
+
+
+ps_line=($(grep -w -m1 "$process" <(ps -ef) | awk '{print $2 " " $8}'))
+pid=${ps_line[0]}
+cmd=${ps_line[1]}
+
+if [ -z "$pid" ] ; then
+	echo "No such process: $process"
+	exit 1
+fi
+
+exe_file=$(readlink /proc/$pid/exe)
+
+if [ -z "$exe_file" ]; then
+	echo "Please sudo it!"
+	exit 1
+fi
+
+file_type=$(file $exe_file)
+if grep 64-bit <<< "$file_type" &> /dev/null ;then
+	exe_bits="64-bit"
+elif grep 32-bit <<< "$file_type" &> /dev/null ;then
+	exe_bits="32-bit"
+else
+	exe_bits="?-bit"
+fi
+
+##################################################################
+# while start
+
+while true
+do
+
+#---------------------------------------------------------------
+# process death detect
+
+while ! ls /proc/$pid/comm &> /dev/null
+do
+	pid=$(grep "$process" -m 1 <(ps -ef) | awk '{print $2}')
+	echo Try to find new pid:$pid
+done
+
+
+#---------------------------------------------------------------
+# get cgroup info
+
+cgroup=$(cat /proc/$pid/cgroup)
+autogroup=$(cat /proc/$pid/autogroup)
+cpuset=$(cat /proc/$pid/cpuset)
+
+
+#---------------------------------------------------------------
+# get threads info
+
+threads=$(ps -T -p $pid | grep -v PID)
+i=0
+unset tids
+unset cmds
+while read line
+do
+array=($(awk '{print $2 " " $5}' <<< "$line"))
+tids[$i]=${array[0]}
+cmds[$i]=${array[1]}
+let i++
+done <<< "$threads"
+
+status_files=""
+sched_files=""
+for (( i=0; i < ${#tids[*]}; i++ ))
+do
+status_files="$status_files /proc/$pid/task/${tids[$i]}/status"
+sched_files="$sched_files /proc/$pid/task/${tids[$i]}/sched"
+done
+
+status_files_lines=$(cat $status_files)
+
+tid_cpus=$(grep Cpus_allowed_list <<< "$status_files_lines")
+tid_cpus=${tid_cpus//Cpus_allowed_list:/}
+tids_cpus=($tid_cpus)
+
+tid_states=$(grep State: <<< "$status_files_lines")
+tid_states=${tid_states//State:/}
+tid_states=$(sed 's/(.*)//g' <<< "$tid_states")
+tids_states=($tid_states)
+
+
+sched_files_lines=$(cat $sched_files)
+
+tid_policys=$(grep ^policy <<< "$sched_files_lines")
+tid_policys=${tid_policys//policy/}
+tid_policys=${tid_policys//:/}
+tid_policys=${tid_policys//0/Normal}
+tid_policys=${tid_policys//1/FIFO}
+tid_policys=${tid_policys//2/RR}
+tid_policys=${tid_policys//3/BATCH}
+tid_policys=${tid_policys//5/IDLE}
+tid_policys=${tid_policys//6/DEADLINE}
+policys=($tid_policys)
+
+tid_prios=$(grep ^prio <<< "$sched_files_lines")
+tid_prios=${tid_prios//prio/}
+tid_prios=${tid_prios//:/}
+prios=($tid_prios)
+
+tid_migrations=$(grep nr_migrations <<< "$sched_files_lines")
+tid_migrations=${tid_migrations//se.nr_migrations/}
+tid_migrations=${tid_migrations//:/}
+tids_migrations=($tid_migrations)
+
+tid_switches=$(grep nr_switches <<< "$sched_files_lines")
+tid_switches=${tid_switches//nr_switches/}
+tid_switches=${tid_switches//:/}
+tids_switches=($tid_switches)
+
+tid_vswitches=$(grep nr_voluntary_switches <<< "$sched_files_lines")
+tid_vswitches=${tid_vswitches//nr_voluntary_switches/}
+tid_vswitches=${tid_vswitches//:/}
+tids_vswitches=($tid_vswitches)
+
+tid_iswitches=$(grep nr_involuntary_switches <<< "$sched_files_lines")
+tid_iswitches=${tid_iswitches//nr_involuntary_switches/}
+tid_iswitches=${tid_iswitches//:/}
+tids_iswitches=($tid_iswitches)
+
+
+tid_times=$(grep ^se.sum_exec_runtime <<< "$sched_files_lines")
+tid_times=${tid_times//se.sum_exec_runtime/}
+tid_times=${tid_times//:/}
+times=($tid_times)
+total_milis=0
+for (( i=0; i < ${#times[*]}; i++ ))
+do
+	milis=$(printf "%.0f" ${times[$i]})
+	total_milis=$(($total_milis + $milis))
+	mili=$((milis%1000))
+	time=$((milis/1000))
+	h=$((time/3600))
+	m=$((time%3600/60))
+	s=$((time%60))
+	thread_times[$i]=$(printf "%02d:%02d:%02d.%03d\n" $h $m $s $mili)
+done
+mili=$((total_milis%1000))
+time=$((total_milis/1000))
+h=$((time/3600))
+m=$((time%3600/60))
+s=$((time%60))
+total_thread_timef=$(printf "%02d:%02d:%02d.%03d\n" $h $m $s $mili)
+
+uptimes=($(cat /proc/uptime))
+uptime=$(printf "%.0f" ${uptimes[0]})
+h=$((uptime/3600))
+m=$((uptime%3600/60))
+s=$((uptime%60))
+uptimef=$(printf "%02d:%02d:%02d.000\n" $h $m $s)
+
+
+#--------------------------------------------------------------------------
+# get mem info
+
+# smaps=$(cat /proc/$pid/smaps 2>/dev/null)
+# if [ -n "$smaps" ] ;then
+# 	mems=($(awk '/^Size:/ {mem_vss+=$2} /^Rss:/ {mem_rss+=$2} /^Pss:/ {mem_pss+=$2} 
+# 	             /^Swap:/ {mem_swap+=$2} /^SwapPss:/ {mem_pswp+=$2} 
+# 	             END {printf("%2.0f %2.0f %2.0f %2.0f %2.0f",
+# 	    		 mem_vss/1024, mem_rss/1024, mem_pss/1024, mem_swap/1024, mem_pswp/1024)}' <<< "$smaps"))
+# 	vss=${mems[0]}
+# 	rss=${mems[1]}
+# 	pss=${mems[2]}
+# 	swap=${mems[3]}
+# 	pswp=${mems[4]}
+# 	pmem=$(($pss + $pswp))
+# fi
+
+#--------------------------------------------
+
+status=$(cat /proc/$pid/status 2>/dev/null)
+
+VmPeak=$(grep VmPeak <<< "$status")
+VmPeak=${VmPeak//VmPeak:/}
+VmPeak=${VmPeak//kB/}
+VmPeak=$(($VmPeak/1024))
+
+VmSize=$(grep VmSize <<< "$status")
+VmSize=${VmSize//VmSize:/}
+VmSize=${VmSize//kB/}
+VmSize=$(($VmSize/1024))
+
+VmRSS=$(grep VmRSS <<< "$status")
+VmRSS=${VmRSS//VmRSS:/}
+VmRSS=${VmRSS//kB/}
+VmRSS=$(($VmRSS/1024))
+
+RssAnon=$(grep RssAnon <<< "$status")
+RssAnon=${RssAnon//RssAnon:/}
+RssAnon=${RssAnon//kB/}
+RssAnon=$(($RssAnon/1024))
+
+RssFile=$(grep RssFile <<< "$status")
+RssFile=${RssFile//RssFile:/}
+RssFile=${RssFile//kB/}
+RssFile=$(($RssFile/1024))
+
+RssShmem=$(grep RssShmem <<< "$status")
+RssShmem=${RssShmem//RssShmem:/}
+RssShmem=${RssShmem//kB/}
+RssShmem=$(($RssShmem/1024))
+
+
+smaps_rollup=$(cat /proc/$pid/smaps_rollup 2>/dev/null)
+
+Pss=$(grep -w "Pss:" <<< "$smaps_rollup")
+Pss=${Pss//Pss:/}
+Pss=${Pss//kB/}
+Pss=$(($Pss/1024))
+
+Pss_Anon=$(grep Pss_Anon <<< "$smaps_rollup")
+Pss_Anon=${Pss_Anon//Pss_Anon:/}
+Pss_Anon=${Pss_Anon//kB/}
+Pss_Anon=$(($Pss_Anon/1024))
+
+Pss_File=$(grep Pss_File <<< "$smaps_rollup")
+Pss_File=${Pss_File//Pss_File:/}
+Pss_File=${Pss_File//kB/}
+Pss_File=$(($Pss_File/1024))
+
+Pss_Shmem=$(grep Pss_Shmem <<< "$smaps_rollup")
+Pss_Shmem=${Pss_Shmem//Pss_Shmem:/}
+Pss_Shmem=${Pss_Shmem//kB/}
+Pss_Shmem=$(($Pss_Shmem/1024))
+
+Swap=$(grep -w "Swap:" <<< "$smaps_rollup")
+Swap=${Swap//Swap:/}
+Swap=${Swap//kB/}
+Swap=$(($Swap/1024))
+
+SwapPss=$(grep SwapPss <<< "$smaps_rollup")
+SwapPss=${SwapPss//SwapPss:/}
+SwapPss=${SwapPss//kB/}
+SwapPss=$(($SwapPss/1024))
+
+Pmem=$(($Pss + $SwapPss))
+
+oom_score=$(cat /proc/$pid/oom_score 2>/dev/null)
+oom_score_adj=$(cat /proc/$pid/oom_score_adj 2>/dev/null)
+
+
+#--------------------------------------------------------------------------
+# get io info
+
+io=$(cat /proc/$pid/io 2>/dev/null)
+
+rchar=$(grep ^rchar <<< "$io")
+rchar=${rchar//rchar: /}
+rchar=$((rchar/1024/1024))
+
+wchar=$(grep ^wchar <<< "$io")
+wchar=${wchar//wchar: /}
+wchar=$((wchar/1024/1024))
+
+syscr=$(grep ^syscr <<< "$io")
+syscr=${syscr//syscr: /}
+syscr=$((syscr/1024/1024))
+
+syscw=$(grep ^syscw <<< "$io")
+syscw=${syscw//syscw: /}
+syscw=$((syscw/1024/1024))
+
+read_bytes=$(grep ^read_bytes <<< "$io")
+read_bytes=${read_bytes//read_bytes: /}
+read_bytes=$((read_bytes/1024/1024))
+
+write_bytes=$(grep ^write_bytes <<< "$io")
+write_bytes=${write_bytes//write_bytes: /}
+write_bytes=$((write_bytes/1024/1024))
+
+cancelled_write_bytes=$(grep ^cancelled_write_bytes <<< "$io")
+cancelled_write_bytes=${cancelled_write_bytes//cancelled_write_bytes: /}
+cancelled_write_bytes=$((cancelled_write_bytes/1024/1024))
+
+#--------------------------------------------------------------------------
+# get fds info
+
+fd_lines=$(ls -l /proc/$pid/fd | grep -v "total")
+
+i=0
+while read line
+do
+	fds[$i]=$(awk '{print $9}' <<< "$line")
+	paths[$i]=$(awk '{print $11}' <<< "$line")
+	let i++
+done <<< "$fd_lines"
+fds_nr=$i
+
+# sort fds
+
+eval index_fd=({0..$((fds_nr-1))})
+
+for((i=0; i < fds_nr-1;))
+do
+	pos=$((fds_nr-1))
+	for((j=fds_nr-1; j > i; j--))
+	do
+		if [ ${fds[${index_fd[$j]}]} -lt ${fds[${index_fd[$((j-1))]}]} ] ; then
+			tmp=${index_fd[$j]}
+			index_fd[$j]=${index_fd[$((j-1))]}
+			index_fd[$((j-1))]=$tmp
+			pos=$j
+		fi
+	done
+	i=$pos
+done
+
+
+#-----------------------------------------------------------------------------------
+# print start
+
+#print process info
+echo "==============================================================================================================================" "i:$((k++))"
+$color_yellow_on
+printf "%-5s: $cmd ($exe_bits, %d threads, pmem:%dM, %s fds)  \n" $pid ${#tids[*]} $Pmem $fds_nr
+printf "cgroup    : %s\n" "$cgroup"
+printf "cpuset    : %s\n" "$cpuset"
+printf "autogroup : %s\n" "$autogroup"
+$color_off
+printf "\n"
+
+#print mem info
+echo "--------------------------------------------------------------------------------------------------------------------------"
+printf "%8s  %8s | %8s  %8s  %8s  %8s | %8s  %8s  %8s  %8s | %8s  %8s\n"  "VmPeak" "VmSize" "RSS" "RSS_Anon" "RSS_File" "RSS_Shmm" "PSS"  "PSS_Anon" "PSS_File" "PSS_Shmm" "SWAP"  "PSWP"
+$color_green_on
+printf "%7dM  %7dM | %7dM  %7dM  %7dM  %7dM | %7dM  %7dM  %7dM  %7dM | %7dM  %7dM\n"  $VmPeak $VmSize $VmRSS $RssAnon $RssFile  $RssShmem $Pss $Pss_Anon $Pss_File $Pss_Shmem $Swap  $SwapPss 
+$color_off
+printf "\n"
+
+#print threads info
+echo "----------------------------------------------------------------------------------------------------------------"
+printf "%-5s  %-16s  %-5s  %-5s  %-5s  %5s  %12s  %9s  %9s  %9s  %9s\n"  "Tid"  "Thread Name" "State" "Policy" "Prio" "Cpus" "Runtime" "Migration" "Switches" "VSwitches" "ISwitches"
+for (( i=0; i < ${#tids[*]}; i++ ))
+do
+if [ "${policys[$i]}" = "Normal" -o "${policys[$i]}" = "BATCH" ] ;then
+	prio=$((${prios[$i]} - 120))
+elif [ "${policys[$i]}" = "FIFO" -o "${policys[$i]}" = "RR" ] ;then
+	prio=$((99 - ${prios[$i]}))
+fi
+test "${policys[$i]}" != "Normal" && $color_green_on
+printf "%-5s: %-16s  %-6s %-6s   %3s   %5s  %12s  %9s  %9s  %9s  %9s\n" ${tids[$i]} ${cmds[$i]}  ${tids_states[$i]} ${policys[$i]} $prio ${tids_cpus[$i]} ${thread_times[$i]} ${tids_migrations[$i]} ${tids_switches[$i]} ${tids_vswitches[$i]} ${tids_iswitches[$i]}
+test "${policys[$i]}" != "Normal" && $color_off 
+done
+echo "----------------------------------------------------------------------------------------------------------------"
+printf "%52s: %12s\n" "Total Runtime"   $total_thread_timef
+printf "%52s: %12s\n" "System Uptime"   $uptimef
+printf "\n"
+
+#print io info
+echo "------------------------------------------------------------------------------"
+printf "%11s  %11s  %11s  %11s  %11s  %11s\n"  "rchar"  "wchar"  "syscr"  "syscw"  "read_bytes"  "write_bytes"
+printf "%10dM  %10dM  %10dM  %10dM  %10dM  %10dM\n"  $rchar $wchar $syscr $syscw $read_bytes $write_bytes 
+printf "\n"
+
+#print fds info
+echo "----------------------------------------------------"
+printf "%4s    %-15s\n"  "FD"  "Path"
+for (( i=0; i < $fds_nr; i++ ))
+do
+j=${index_fd[$i]}
+printf "%4s -> %-15s\n" ${fds[$j]} ${paths[$j]} 
+done
+printf "\n"
+
+# print end
+#-----------------------------------------------------------------------------------
+
+
+done
+
+# while end
+##################################################################################
+
