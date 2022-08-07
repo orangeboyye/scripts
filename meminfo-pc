@@ -1,0 +1,303 @@
+#!/bin/bash
+
+
+color_black_on="printf \033[30m"
+color_red_on="printf \033[31m"
+color_green_on="printf \033[32m"
+color_yellow_on="printf \033[33m"
+color_blue_on="printf \033[34m"
+color_purple_on="printf \033[35m"
+color_cyan_on="printf \033[36m"
+color_white_on="printf \033[37m"
+
+color_off="printf \033[0m"
+
+
+#---------------------------------------------------------------
+# get once mem info
+
+total=$(grep "^MemTotal:" <(cat /proc/meminfo) | awk '{print $2}')
+total=$(( total/1024 ))
+
+if ls /sys/kernel/debug/memblock/memory &>/dev/null ;then
+	memblock_mem=`cat /sys/kernel/debug/memblock/memory`
+	i=0
+	while read line
+	do
+		line=${line#*:}
+
+		starts[i]=${line%..*}
+		ends[i]=${line#*..}
+
+		sizes[i]=$(( ${ends[i]} - ${starts[i]} + 1 ))
+		os_mem=$(( os_mem + ${sizes[i]} ))
+
+		((i++))
+
+	done <<< "$memblock_mem"
+
+	physmem=$(( (${ends[i-1]:0:-7}fffffff - ${starts[0]} + 1) /1024/1024 ))
+	os_mem=$(( os_mem/1024/1024 ))
+	uefi_mem=$(( physmem - os_mem ))
+	kernel_mem=$(( os_mem - total ))
+else
+	iomem=$(cat /proc/iomem)
+
+	physmem=$(( (total+1024)/1024*1024 ))
+	uefi_mem=-1
+	kernel_mem=-1
+fi
+
+
+
+##################################################################
+# while start
+
+while true
+do
+
+#---------------------------------------------------------------
+# get system mem info
+
+meminfo=`cat /proc/meminfo`
+
+slab=$(grep "^Slab:" <<< "$meminfo" | awk '{print $2}')
+slab=$((slab/1024))
+
+cached=$(grep "^Cached:" <<< "$meminfo" | awk '{print $2}')
+cached=$((cached/1024))
+
+free=$(grep "^MemFree:" <<< "$meminfo" | awk '{print $2}')
+free=$((free/1024))
+
+avail=$(grep "^MemAvailable:" <<< "$meminfo" | awk '{print $2}')
+avail=$((avail/1024))
+
+swaptotal=$(grep "^SwapTotal:" <<< "$meminfo" | awk '{print $2}')
+swaptotal=$(((swaptotal+4)/1024))
+
+swapfree=$(grep "^SwapFree:" <<< "$meminfo" | awk '{print $2}')
+swapfree=$((swapfree/1024))
+
+swapused=$((swaptotal - swapfree))
+
+activeanon=$(grep "^Active(anon):" <<< "$meminfo" | awk '{print $2}')
+activeanon=$((activeanon/1024))
+
+inactiveanon=$(grep "^Inactive(anon):" <<< "$meminfo" | awk '{print $2}')
+inactiveanon=$((inactiveanon/1024))
+
+anonpage=$((activeanon + inactiveanon))
+
+anonpagemapped=$(grep "^AnonPages:" <<< "$meminfo" | awk '{print $2}')
+anonpagemapped=$((anonpagemapped/1024))
+
+activefile=$(grep "^Active(file):" <<< "$meminfo" | awk '{print $2}')
+activefile=$((activefile/1024))
+
+inactivefile=$(grep "^Inactive(file):" <<< "$meminfo" | awk '{print $2}')
+inactivefile=$((inactivefile/1024))
+
+filepage=$((activefile + inactivefile))
+
+filepagemapped=$(grep "^Mapped:" <<< "$meminfo" | awk '{print $2}')
+filepagemapped=$((filepagemapped/1024))
+
+active=$(grep "^Active:" <<< "$meminfo" | awk '{print $2}')
+active=$((active/1024))
+
+inactive=$(grep "^Inactive:" <<< "$meminfo" | awk '{print $2}')
+inactive=$((inactive/1024))
+
+unevict=$(grep "^Unevictable:" <<< "$meminfo" | awk '{print $2}')
+unevict=$((unevict/1024))
+
+userpage=$((active + inactive + unevict + mlocked))
+
+
+#-----------------------------------------------------------------------------
+# get all process mem info and sort
+
+i=0
+while read line
+do
+	sz=$(awk '{print $2}' <<< $line)
+	if [ "$sz" = "SZ" ] ;then
+		continue
+	fi
+	if [ "$sz" = "0" ] ;then
+		continue
+	fi
+	pids_o[$i]=$(awk '{print $1}' <<< $line)
+	cmds_o[$i]=$(awk '{print $3}' <<< $line)
+	let i++
+done < <(ps -e -o pid= -o sz= -o cmd= k -size)
+
+proc_nr_proc=$i
+
+#----------------------------------
+
+pss_sum=0
+pswp_sum=0
+pmem_sum=0
+for((i=0, j=0; j < proc_nr_proc; j++))
+do
+
+	smaps_rollup=$(cat /proc/${pids_o[$j]}/smaps_rollup 2>/dev/null)
+	if [ -z "$smaps_rollup" ] ;then
+		continue
+	echo smaps_rollup:$smaps_rollup
+	fi
+
+	pids[$i]=${pids_o[$j]}
+	cmds[$i]=${cmds_o[$j]}
+
+
+	Rss=$(grep -w "Rss:" <<< "$smaps_rollup")
+	Rss=${Rss//Rss:/}
+	Rss=${Rss//kB/}
+	Rss=$(($Rss/1024))
+
+	Pss=$(grep -w "Pss:" <<< "$smaps_rollup")
+	Pss=${Pss//Pss:/}
+	Pss=${Pss//kB/}
+	Pss=$(($Pss/1024))
+
+	Swap=$(grep -w "Swap:" <<< "$smaps_rollup")
+	Swap=${Swap//Swap:/}
+	Swap=${Swap//kB/}
+	Swap=$(($Swap/1024))
+
+	SwapPss=$(grep SwapPss <<< "$smaps_rollup")
+	SwapPss=${SwapPss//SwapPss:/}
+	SwapPss=${SwapPss//kB/}
+	SwapPss=$(($SwapPss/1024))
+
+
+	rss[$i]=$Rss
+	pss[$i]=$Pss
+	swap[$i]=$Swap
+	pswp[$i]=$SwapPss
+	pmem[$i]=$(($Pss + $SwapPss))
+
+	pss_sum=$((pss_sum + ${pss[$i]}))
+	pswp_sum=$((pswp_sum + ${pswp[$i]}))
+	pmem_sum=$((pmem_sum + ${pmem[$i]}))
+
+	let i++
+	if [ $((i%4)) -eq 0 ]; then
+		printf "*"
+	fi
+
+done
+printf "\n\n"
+
+proc_nr_proc=$i
+
+#------------------------------------------
+
+eval index_proc=({0..$((proc_nr_proc-1))})
+for((i=0; i < proc_nr_proc-1; ))
+do
+	pos=$((proc_nr_proc-1))
+	for((j=proc_nr_proc-1; j > i; j--))
+	do
+		if [ ${pmem[${index_proc[$j]}]} -gt ${pmem[${index_proc[$((j-1))]}]} ] ; then
+			tmp=${index_proc[$j]}
+			index_proc[$j]=${index_proc[$((j-1))]}
+			index_proc[$((j-1))]=$tmp
+			pos=$j
+		fi
+	done
+	i=$pos
+done
+
+#-----------------------------------------------------------------------------------
+# print start
+
+#print system mem info
+
+date
+echo   "================================="
+printf "Memory dump           %5s\n" "i:$((i++))"
+$color_green_on
+printf "PhysMem:          %5d GB\n" $((physmem/1024))
+$color_off
+printf "UEFI:             %5d MB\n" $uefi_mem
+printf "Kernel:           %5d MB\n" $kernel_mem
+echo   "---------------------------"
+$color_green_on
+printf "MemTotal:         %5d MB\n" $total
+$color_off
+printf "Slab:             %5d MB\n" $slab
+printf "Cached:           %5d MB\n" $cached
+printf "MemFree:          %5d MB\n" $free
+$color_green_on
+printf "MemAvailable:     %5d MB\n" $avail
+$color_off
+echo   "---------------------------"
+printf "SwapTotal:        %5d MB\n" $swaptotal
+printf "SwapFree:         %5d MB\n" $swapfree
+$color_green_on
+printf "SwapUsed:         %5d MB\n" $swapused
+$color_off
+printf "\n"
+
+echo   "---------------------------"
+printf "ActiveAnon:       %5d MB\n" $activeanon
+printf "InactiveAnon:     %5d MB\n" $inactiveanon
+$color_green_on
+printf "AnonPage:         %5d MB\n" $anonpage
+$color_off
+printf "AnonPageMapped:   %5d MB\n" $anonpagemapped
+echo   "---------------------------"
+printf "ActiveFile:       %5d MB\n" $activefile
+printf "InactiveFile:     %5d MB\n" $inactivefile
+$color_green_on
+printf "FilePage:         %5d MB\n" $filepage
+$color_off
+printf "FilePageMapped:   %5d MB\n" $filepagemapped
+echo   "---------------------------"
+printf "Active:           %5d MB\n" $active
+printf "Inactive:         %5d MB\n" $inactive
+printf "Unevict:          %5d MB\n" $unevict
+$color_green_on
+printf "UserPage:         %5d MB\n" $userpage
+$color_off
+printf "\n"
+
+
+#print process mem info
+
+echo   "================================================================="
+printf "Rank  PMEM   RSS   PSS  SWAP  PSWP          PID  CMD\n"
+
+for((j=0; j < 10; j++))
+do
+i=${index_proc[$j]}
+test $j -lt 3 && $color_red_on
+printf "%4d  %4.0f  %4.0f  %4.0f  %4.0f  %4.0f  MB  : %5d  %-20s\n"  $((j+1)) ${pmem[$i]} ${rss[$i]} ${pss[$i]} ${swap[$i]}  ${pswp[$i]} ${pids[$i]}  ${cmds[$i]}
+test $j -lt 3 && $color_off
+done
+
+echo " ...   ...   ...   ...   ...   ...        .....  ..............."
+
+echo "----------------------------------------------------------------"
+$color_green_on
+printf "SUM   %4.0f        %4.0f        %4.0f  MB  (include all %d processes)\n"  $pmem_sum  $pss_sum  $pswp_sum $proc_nr_proc
+$color_off
+
+printf "\n"
+
+
+done
+
+
+# print end
+#-----------------------------------------------------------------------------------
+
+
+# while end
+##################################################################################
+
+
