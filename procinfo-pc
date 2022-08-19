@@ -25,29 +25,36 @@ else
 fi
 
 
-ps_line=($(grep -w -m1 "$process" <(ps -ef) | awk '{print $2 " " $8}'))
+ps_line=($(grep -w -m1 "$process" <(ps -ef) | awk '{print $2 " " $3 " " $8}'))
 pid=${ps_line[0]}
-cmd=${ps_line[1]}
+ppid=${ps_line[1]}
+cmd=${ps_line[2]}
 
 if [ -z "$pid" ] ; then
 	echo "No such process: $process"
 	exit 1
 fi
 
-exe_file=$(readlink /proc/$pid/exe)
-
-if [ -z "$exe_file" ]; then
-	echo "Please sudo it!"
-	exit 1
-fi
-
-file_type=$(file $exe_file)
-if grep 64-bit <<< "$file_type" &> /dev/null ;then
-	exe_bits="64-bit"
-elif grep 32-bit <<< "$file_type" &> /dev/null ;then
-	exe_bits="32-bit"
+if [ $ppid -eq 2 ] ; then
+	exe_bits="kthread"
 else
-	exe_bits="?-bit"
+
+	exe_file=$(readlink /proc/$pid/exe)
+
+	if [ -z "$exe_file" ]; then
+		echo "Please sudo it!"
+		exit 1
+	fi
+
+	file_type=$(file $exe_file)
+	if grep 64-bit <<< "$file_type" &> /dev/null ;then
+		exe_bits="64-bit"
+	elif grep 32-bit <<< "$file_type" &> /dev/null ;then
+		exe_bits="32-bit"
+	else
+		exe_bits="?-bit"
+	fi
+
 fi
 
 ##################################################################
@@ -203,32 +210,32 @@ status=$(cat /proc/$pid/status 2>/dev/null)
 VmPeak=$(grep VmPeak <<< "$status")
 VmPeak=${VmPeak//VmPeak:/}
 VmPeak=${VmPeak//kB/}
-VmPeak=$(($VmPeak/1024))
+VmPeak=$((${VmPeak:-0}/1024))
 
 VmSize=$(grep VmSize <<< "$status")
 VmSize=${VmSize//VmSize:/}
 VmSize=${VmSize//kB/}
-VmSize=$(($VmSize/1024))
+VmSize=$((${VmSize:-0}/1024))
 
 VmRSS=$(grep VmRSS <<< "$status")
 VmRSS=${VmRSS//VmRSS:/}
 VmRSS=${VmRSS//kB/}
-VmRSS=$(($VmRSS/1024))
+VmRSS=$((${VmRSS:-0}/1024))
 
 RssAnon=$(grep RssAnon <<< "$status")
 RssAnon=${RssAnon//RssAnon:/}
 RssAnon=${RssAnon//kB/}
-RssAnon=$(($RssAnon/1024))
+RssAnon=$((${RssAnon:-0}/1024))
 
 RssFile=$(grep RssFile <<< "$status")
 RssFile=${RssFile//RssFile:/}
 RssFile=${RssFile//kB/}
-RssFile=$(($RssFile/1024))
+RssFile=$((${RssFile:-0}/1024))
 
 RssShmem=$(grep RssShmem <<< "$status")
 RssShmem=${RssShmem//RssShmem:/}
 RssShmem=${RssShmem//kB/}
-RssShmem=$(($RssShmem/1024))
+RssShmem=$((${RssShmem:-0}/1024))
 
 
 smaps_rollup=$(cat /proc/$pid/smaps_rollup 2>/dev/null)
@@ -236,32 +243,32 @@ smaps_rollup=$(cat /proc/$pid/smaps_rollup 2>/dev/null)
 Pss=$(grep -w "Pss:" <<< "$smaps_rollup")
 Pss=${Pss//Pss:/}
 Pss=${Pss//kB/}
-Pss=$(($Pss/1024))
+Pss=$((${Pss:-0}/1024))
 
 Pss_Anon=$(grep Pss_Anon <<< "$smaps_rollup")
 Pss_Anon=${Pss_Anon//Pss_Anon:/}
 Pss_Anon=${Pss_Anon//kB/}
-Pss_Anon=$(($Pss_Anon/1024))
+Pss_Anon=$((${Pss_Anon:-0}/1024))
 
 Pss_File=$(grep Pss_File <<< "$smaps_rollup")
 Pss_File=${Pss_File//Pss_File:/}
 Pss_File=${Pss_File//kB/}
-Pss_File=$(($Pss_File/1024))
+Pss_File=$((${Pss_File:-0}/1024))
 
 Pss_Shmem=$(grep Pss_Shmem <<< "$smaps_rollup")
 Pss_Shmem=${Pss_Shmem//Pss_Shmem:/}
 Pss_Shmem=${Pss_Shmem//kB/}
-Pss_Shmem=$(($Pss_Shmem/1024))
+Pss_Shmem=$((${Pss_Shmem:-0}/1024))
 
 Swap=$(grep -w "Swap:" <<< "$smaps_rollup")
 Swap=${Swap//Swap:/}
 Swap=${Swap//kB/}
-Swap=$(($Swap/1024))
+Swap=$((${Swap:-0}/1024))
 
 SwapPss=$(grep SwapPss <<< "$smaps_rollup")
 SwapPss=${SwapPss//SwapPss:/}
 SwapPss=${SwapPss//kB/}
-SwapPss=$(($SwapPss/1024))
+SwapPss=$((${SwapPss:-0}/1024))
 
 Pmem=$(($Pss + $SwapPss))
 
@@ -310,6 +317,9 @@ fd_lines=$(ls -l /proc/$pid/fd | grep -v "total")
 i=0
 while read line
 do
+	if [ -z "$line" ] ;then
+		continue;
+	fi
 	fds[$i]=$(awk '{print $9}' <<< "$line")
 	paths[$i]=$(awk '{print $11}' <<< "$line")
 	let i++
@@ -395,8 +405,8 @@ printf "\n"
 # print end
 #-----------------------------------------------------------------------------------
 
-
 done
+
 
 # while end
 ##################################################################################
