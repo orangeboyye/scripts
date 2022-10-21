@@ -369,7 +369,7 @@ printf "\n"
 
 #print threads info
 echo "----------------------------------------------------------------------------------------------------------------"
-printf "%-5s  %-16s  %-5s  %-5s  %-5s  %5s  %12s  %9s  %9s  %9s  %9s\n"  "Tid"  "Thread Name" "State" "Policy" "Prio" "Cpus" "Runtime" "Migration" "Switches" "VSwitches" "ISwitches"
+printf "%-6s  %-16s  %-5s  %-5s  %-5s  %5s  %12s  %9s  %9s  %9s  %9s\n"  "Tid"  "Thread Name" "State" "Policy" "Prio" "Cpus" "Runtime" "Migration" "Switches" "VSwitches" "ISwitches"
 for (( i=0; i < ${#tids[*]}; i++ ))
 do
 if [ "${policys[$i]}" = "Normal" -o "${policys[$i]}" = "BATCH" ] ;then
@@ -378,12 +378,12 @@ elif [ "${policys[$i]}" = "FIFO" -o "${policys[$i]}" = "RR" ] ;then
 	prio=$((99 - ${prios[$i]}))
 fi
 test "${policys[$i]}" != "Normal" && $color_green_on
-printf "%-5s: %-16s  %-6s %-6s   %3s   %5s  %12s  %9s  %9s  %9s  %9s\n" ${tids[$i]} ${cmds[$i]}  ${tids_states[$i]} ${policys[$i]} $prio ${tids_cpus[$i]} ${thread_times[$i]} ${tids_migrations[$i]} ${tids_switches[$i]} ${tids_vswitches[$i]} ${tids_iswitches[$i]}
+printf "%-6s: %-16s  %-6s %-6s   %3s   %5s  %12s  %9s  %9s  %9s  %9s\n" ${tids[$i]} ${cmds[$i]}  ${tids_states[$i]} ${policys[$i]} $prio ${tids_cpus[$i]} ${thread_times[$i]} ${tids_migrations[$i]} ${tids_switches[$i]} ${tids_vswitches[$i]} ${tids_iswitches[$i]}
 test "${policys[$i]}" != "Normal" && $color_off 
 done
 echo "----------------------------------------------------------------------------------------------------------------"
-printf "%52s: %12s\n" "Total Runtime"   $total_thread_timef
-printf "%52s: %12s\n" "System Uptime"   $uptimef
+printf "%53s: %12s\n" "Total Runtime"   $total_thread_timef
+printf "%53s: %12s\n" "System Uptime"   $uptimef
 printf "\n"
 
 #print io info
